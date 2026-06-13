@@ -1,0 +1,598 @@
+openapi: 3.1.0
+info:
+  # Do not change the title, if the title changes, the import paths will be broken
+  title: Api
+  version: 0.1.0
+  description: DUNS Engine API for automated D-U-N-S acquisition and post-incorporation identity orchestration
+servers:
+  - url: /api
+    description: Base API path
+tags:
+  - name: health
+    description: Health operations
+  - name: cases
+    description: DUNS request cases
+  - name: metrics
+    description: Dashboard metrics
+  - name: quota
+    description: D&B daily quota usage
+  - name: webhook
+    description: Inbound webhooks
+  - name: demo
+    description: Demo-only helpers (disabled in production when DEMO_MODE is "false")
+paths:
+  /healthz:
+    get:
+      operationId: healthCheck
+      tags: [health]
+      summary: Health check
+      description: Returns server health status
+      responses:
+        "200":
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+
+  /v1/metrics:
+    get:
+      operationId: getMetrics
+      tags: [metrics]
+      summary: Get dashboard metrics
+      description: Returns aggregated metrics for the DUNS Engine dashboard
+      responses:
+        "200":
+          description: Metrics summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Metrics"
+
+  /v1/cases:
+    get:
+      operationId: getCases
+      tags: [cases]
+      summary: List DUNS cases
+      description: Returns paginated list of DUNS request cases, optionally filtered by status
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema:
+            $ref: "#/components/schemas/CaseStatus"
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 50
+            minimum: 1
+            maximum: 200
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 0
+            minimum: 0
+      responses:
+        "200":
+          description: List of cases
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CaseListResponse"
+    post:
+      operationId: createCase
+      tags: [cases]
+      summary: Submit a new DUNS request
+      description: Submit a business entity for DUNS number acquisition. Match check runs automatically before submission.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: false
+          schema:
+            type: string
+          description: Optional client-supplied key. Re-sending the same key returns the original case instead of creating a duplicate.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateCaseRequest"
+      responses:
+        "201":
+          description: Case created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Case"
+        "422":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /v1/cases/{caseId}:
+    get:
+      operationId: getCaseById
+      tags: [cases]
+      summary: Get a single case by ID
+      parameters:
+        - name: caseId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Case detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Case"
+        "404":
+          description: Case not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /v1/quota:
+    get:
+      operationId: getQuota
+      tags: [quota]
+      summary: Get daily D&B quota usage
+      description: Returns today's Mini Research quota usage per country
+      responses:
+        "200":
+          description: Quota usage by country
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/QuotaEntry"
+
+  /v1/webhook/atlas:
+    post:
+      operationId: atlasWebhook
+      tags: [webhook]
+      summary: Atlas incorporation webhook
+      description: |
+        Receives new incorporation events from Stripe Atlas and automatically initiates DUNS acquisition.
+        Authenticated with an HMAC-SHA256 signature in the `Atlas-Signature` header
+        (format `t=<unix-seconds>,v1=<hex>`, signed over `<t>.<raw-body>`) verified against
+        `ATLAS_WEBHOOK_SECRET`. Replays outside a 5-minute tolerance are rejected. Delivery is
+        idempotent on `company_id`, so retried events never create duplicate cases or consume quota.
+      parameters:
+        - name: Atlas-Signature
+          in: header
+          required: true
+          schema:
+            type: string
+          description: HMAC signature in the format `t=<unix-seconds>,v1=<hex>`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AtlasIncomingPayload"
+      responses:
+        "200":
+          description: Case created from webhook (or existing case returned on idempotent replay)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AtlasAcknowledgement"
+        "400":
+          description: Malformed signature header
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: "Unauthorized: missing, expired, or invalid signature"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "503":
+          description: Webhook signing secret not configured
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /v1/demo/simulate-webhook:
+    post:
+      operationId: simulateWebhook
+      tags: [demo]
+      summary: Fire a simulated Atlas webhook (demo only)
+      description: |
+        Demo helper that synthesizes a realistic Stripe Atlas incorporation event server-side and
+        runs it through the same case-creation path as the signed webhook, without requiring a
+        signature. Each call creates a unique case. Returns 403 when DEMO_MODE is "false".
+      responses:
+        "200":
+          description: Demo case created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AtlasAcknowledgement"
+        "403":
+          description: Demo mode disabled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /v1/demo/run:
+    post:
+      operationId: runDemo
+      tags: [demo]
+      summary: Run a live demo for a supplied DUNS number (demo only)
+      description: |
+        One-input demo entry point: drop in a DUNS number and watch a case travel through the entire
+        pipeline live. Creates a case that the durable worker drives through every stage and resolves
+        by delivering the exact DUNS that was supplied. Returns 403 when DEMO_MODE is "false".
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RunDemoRequest"
+      responses:
+        "200":
+          description: Demo case created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AtlasAcknowledgement"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Demo mode disabled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /v1/demo/reset:
+    post:
+      operationId: resetDemo
+      tags: [demo]
+      summary: Reset demo data
+      description: >-
+        Wipes all cases and quota usage, then re-seeds a fresh set of demo rows so every demo starts from a clean slate.
+        This is a destructive demo-only operation. It runs without auth in demo/development mode, but in production
+        (or once an Atlas API key is configured) it requires a valid X-API-Key and otherwise returns 403.
+      security:
+        - ApiKeyAuth: []
+      responses:
+        "200":
+          description: Demo data reset
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DemoResetResponse"
+        "403":
+          description: "Forbidden: demo reset is disabled in this environment"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+components:
+  schemas:
+    HealthStatus:
+      type: object
+      properties:
+        status:
+          type: string
+      required:
+        - status
+
+    CaseStatus:
+      type: string
+      enum:
+        - pending_match
+        - match_found
+        - queued
+        - submitted
+        - received
+        - in_progress
+        - closed_created
+        - closed_exists
+        - closed_failed
+        - challenged
+        - error
+
+    Case:
+      type: object
+      properties:
+        id:
+          type: integer
+        case_id:
+          type: string
+          description: Unique case identifier (UUID)
+        status:
+          $ref: "#/components/schemas/CaseStatus"
+        duns_number:
+          type: string
+          nullable: true
+          description: 9-digit D-U-N-S number, populated when resolved
+        business_name:
+          type: string
+        street_address:
+          type: string
+        city:
+          type: string
+        state:
+          type: string
+          nullable: true
+        postal_code:
+          type: string
+          nullable: true
+        country_code:
+          type: string
+          description: ISO 3166-1 alpha-2 country code
+        phone:
+          type: string
+          nullable: true
+        requestor_email:
+          type: string
+          nullable: true
+        match_confidence:
+          type: integer
+          nullable: true
+          description: D&B IDR confidence score (0-10). Score >= 8 means entity already has a DUNS.
+        resolution_code:
+          type: string
+          nullable: true
+          description: Resolution detail for closed_failed cases
+        db_case_id:
+          type: string
+          nullable: true
+          description: D&B internal case ID for submitted cases
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        closed_at:
+          type: string
+          format: date-time
+          nullable: true
+        attempts:
+          type: integer
+          description: Number of processing attempts made by the durable worker
+        last_error:
+          type: string
+          nullable: true
+          description: Most recent error recorded by the worker (set for retried/failed cases)
+        next_action_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the durable worker will next act on this case
+      required:
+        - id
+        - case_id
+        - status
+        - business_name
+        - street_address
+        - city
+        - country_code
+        - created_at
+        - updated_at
+
+    CaseListResponse:
+      type: object
+      properties:
+        cases:
+          type: array
+          items:
+            $ref: "#/components/schemas/Case"
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
+      required:
+        - cases
+        - total
+        - limit
+        - offset
+
+    CreateCaseRequest:
+      type: object
+      properties:
+        business_name:
+          type: string
+          description: Legal entity name
+        street_address:
+          type: string
+        city:
+          type: string
+        state:
+          type: string
+          nullable: true
+        postal_code:
+          type: string
+          nullable: true
+        country_code:
+          type: string
+          default: "US"
+          description: ISO 3166-1 alpha-2 country code
+        phone:
+          type: string
+          nullable: true
+        requestor_email:
+          type: string
+          nullable: true
+          description: Email for resolution notifications
+      required:
+        - business_name
+        - street_address
+        - city
+
+    Metrics:
+      type: object
+      properties:
+        total_requests:
+          type: integer
+        pending:
+          type: integer
+        submitted:
+          type: integer
+        in_progress:
+          type: integer
+        completed_created:
+          type: integer
+          description: Cases resolved with a new DUNS number
+        completed_exists:
+          type: integer
+          description: Cases where DUNS already existed (match found)
+        failed:
+          type: integer
+        avg_resolution_hours:
+          type: number
+          nullable: true
+          description: Average hours from submission to resolution
+        success_rate:
+          type: number
+          description: Percentage of non-failed closed cases
+      required:
+        - total_requests
+        - pending
+        - submitted
+        - in_progress
+        - completed_created
+        - completed_exists
+        - failed
+        - success_rate
+
+    QuotaEntry:
+      type: object
+      properties:
+        country_code:
+          type: string
+        research_type:
+          type: string
+          description: D&B research type (Mini, Standard, etc.)
+        date:
+          type: string
+          format: date
+        used:
+          type: integer
+        limit:
+          type: integer
+        remaining:
+          type: integer
+      required:
+        - country_code
+        - research_type
+        - date
+        - used
+        - limit
+        - remaining
+
+    AtlasIncomingPayload:
+      type: object
+      properties:
+        company_id:
+          type: string
+          description: Stripe Atlas company ID
+        legal_name:
+          type: string
+        street_address:
+          type: string
+        city:
+          type: string
+        state:
+          type: string
+          nullable: true
+        postal_code:
+          type: string
+          nullable: true
+        country_code:
+          type: string
+          default: "US"
+        founder_email:
+          type: string
+          nullable: true
+      required:
+        - company_id
+        - legal_name
+        - street_address
+        - city
+
+    AtlasAcknowledgement:
+      type: object
+      properties:
+        case_id:
+          type: string
+        status:
+          $ref: "#/components/schemas/CaseStatus"
+        message:
+          type: string
+      required:
+        - case_id
+        - status
+        - message
+
+    RunDemoRequest:
+      type: object
+      properties:
+        duns_number:
+          type: string
+          description: A 9-digit DUNS number to deliver at the end of the live run.
+          pattern: "^[0-9]{9}$"
+        business_name:
+          type: string
+          description: Optional business name to display on the case. Defaults to a demo placeholder.
+      required:
+        - duns_number
+
+    DemoResetResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        cases_seeded:
+          type: integer
+        quota_seeded:
+          type: integer
+        message:
+          type: string
+      required:
+        - ok
+        - cases_seeded
+        - quota_seeded
+        - message
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+      required:
+        - error
+        - message

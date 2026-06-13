@@ -4,7 +4,7 @@ Automates Dun & Bradstreet number acquisition for newly-incorporated companies. 
 
 ---
 
-![Pipeline animation](attached_assets/gif/pipeline.gif)
+![Pipeline animation](docs/pipeline.gif)
 
 ---
 
@@ -12,7 +12,7 @@ Automates Dun & Bradstreet number acquisition for newly-incorporated companies. 
 
 After a company incorporates, every downstream service — D&B, Apple Developer, Secretary of State, bank KYB — needs consistent identity data. Getting a DUNS is just the first step. The real pain is keeping address and entity data aligned across all of them.
 
-<img src="attached_assets/screenshots/01-problem-cropped.png" alt="Founders spend weeks on manual DUNS and identity alignment" width="400" />
+<img src="docs/problem.png" alt="Founders spend weeks on manual DUNS and identity alignment" width="400" />
 
 Atlas is the source of truth at incorporation. DUNS is one API call. The harder, more valuable product is keeping entity identity aligned across registries after the company is born.
 
@@ -20,7 +20,15 @@ Atlas is the source of truth at incorporation. DUNS is one API call. The harder,
 
 ## Before vs. after
 
-<img src="attached_assets/screenshots/03-before-after.png" alt="Before: 3-6 weeks manual. After: under 4 hours automated." />
+<img src="docs/before-after.png" alt="Before: 3-6 weeks manual. After: under 4 hours automated." />
+
+---
+
+## Try it
+
+Start the app, open the dashboard, and **drop a 9-digit DUNS number into the box on the home page, then hit _Run live demo_.** That's the whole demo — no setup, no credentials. The number you type is run through every stage of the pipeline (IDR match → quota gate → submit → poll → resolve) and delivered live on the case page, with each stage lighting up as it advances.
+
+There's nothing else to configure: demo mode is on by default, so the engine simulates D&B and returns the exact DUNS you entered.
 
 ---
 
@@ -73,6 +81,12 @@ pnpm --filter @workspace/duns-engine run dev  # dashboard
 
 ## Demo mode
 
-With `ATLAS_WEBHOOK_SECRET` unset, a `/v1/demo/simulate-webhook` endpoint fires synthetic Atlas events so you can walk the full pipeline without production credentials. The dashboard auto-refreshes every 8 seconds and pipeline stages light up as cases move through them.
+With `ATLAS_WEBHOOK_SECRET` unset, the demo endpoints are live so you can walk the full pipeline without production credentials:
+
+- **`POST /v1/demo/run`** — drop in a 9-digit DUNS (`{ "duns_number": "804735132" }`) and the engine runs a case through every stage and delivers that exact number. This is what the home-page _Run live demo_ box calls.
+- **`POST /v1/demo/simulate-webhook`** — fires a synthetic Atlas incorporation event with a random company, exercising the per-country quota gate and the random match/resolution outcomes.
+- **`POST /v1/demo/reset`** — wipes and re-seeds demo data for a clean run.
+
+The dashboard auto-refreshes every 8 seconds and pipeline stages light up as cases move through them.
 
 To wire in real D&B Direct+ credentials: set `ATLAS_WEBHOOK_SECRET` and implement the two D&B API calls in the worker (marked in the source). The durability, quota, and retry logic are already in place.
